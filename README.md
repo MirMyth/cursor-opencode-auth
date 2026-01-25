@@ -27,10 +27,10 @@ Important distinction:
 Copy/paste this whole block as a prompt in OpenCode:
 
 ```text
-Install the Cursor provider + tools from /home/infiland/Github/cursor-opencode-auth.
+Install the Cursor provider + tools from /path/to/cursor-opencode-auth.
 
 Requirements:
-- Use the existing local checkout at /home/infiland/Github/cursor-opencode-auth (do not re-clone).
+- Use the existing local checkout at /path/to/cursor-opencode-auth (do not re-clone).
 - Ensure Cursor CLI is installed (agent). If not installed, install via: curl https://cursor.com/install -fsS | bash
 - Ensure Cursor CLI is authenticated. If not, tell me to run: agent login
 
@@ -41,7 +41,7 @@ Steps:
 
 2) Install the OpenCode plugin (dev shim):
    - Create ~/.config/opencode/plugins/cursor-opencode-auth.ts exporting CursorPlugin from:
-     /home/infiland/Github/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts
+     /path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts
 
 3) Configure OpenCode to expose a provider named "cursor" that points at the local bridge:
    - Update ~/.config/opencode/opencode.json to include:
@@ -70,7 +70,7 @@ agent --list-models
 2) Build this repo:
 
 ```bash
-cd /home/infiland/Github/cursor-opencode-auth
+cd /path/to/cursor-opencode-auth
 npm install
 npm --workspaces run build
 ```
@@ -80,7 +80,7 @@ npm --workspaces run build
 Create `~/.config/opencode/plugins/cursor-opencode-auth.ts`:
 
 ```ts
-export { CursorPlugin } from "/home/infiland/Github/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts";
+export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts";
 ```
 
 4) Add the Cursor provider to `~/.config/opencode/opencode.json`:
@@ -98,7 +98,7 @@ opencode run -m cursor/auto "say hello"
 If the provider can’t connect, run `cursor_bridge_start` inside OpenCode (or start the bridge manually):
 
 ```bash
-node /home/infiland/Github/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js
+node /path/to/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js
 ```
 
 ## Status
