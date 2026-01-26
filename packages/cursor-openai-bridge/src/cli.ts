@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import * as http from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -104,6 +103,38 @@ function getRequiredKey(): string | undefined {
   return process.env.CURSOR_BRIDGE_API_KEY;
 }
 
+type CursorExecutionMode = "agent" | "ask" | "plan";
+
+function normalizeMode(raw: string | undefined): CursorExecutionMode {
+  const m = (raw || "").trim().toLowerCase();
+  if (m === "ask" || m === "plan") return m;
+  // Cursor CLI does not accept --mode=agent; "agent mode" is the default when --mode is omitted.
+  return "agent";
+}
+
+function envBool(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw == null) return defaultValue;
+  const v = raw.trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return defaultValue;
+}
+
+function getWorkspace(): string {
+  const raw = process.env.CURSOR_BRIDGE_WORKSPACE;
+  return raw ? path.resolve(raw) : process.cwd();
+}
+
+function normalizeModelId(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  // Some clients use "provider/model". Cursor CLI expects just "model".
+  const parts = trimmed.split("/");
+  return parts[parts.length - 1] || undefined;
+}
+
 function extractBearerToken(req: http.IncomingMessage): string | undefined {
   const h = req.headers["authorization"];
   if (!h) return undefined;
@@ -189,11 +220,15 @@ async function main() {
   const host = getHost();
   const port = getPort();
   const requiredKey = getRequiredKey();
-  const defaultModel = process.env.CURSOR_BRIDGE_DEFAULT_MODEL || "auto";
-  const mode = process.env.CURSOR_BRIDGE_MODE || "ask";
+  const defaultModel = normalizeModelId(process.env.CURSOR_BRIDGE_DEFAULT_MODEL) || "auto";
+  const mode = normalizeMode(process.env.CURSOR_BRIDGE_MODE);
+  const force = envBool("CURSOR_BRIDGE_FORCE", true);
+  const approveMcps = envBool("CURSOR_BRIDGE_APPROVE_MCPS", true);
+  const strictModel = envBool("CURSOR_BRIDGE_STRICT_MODEL", true);
   const timeoutMs = Number(process.env.CURSOR_BRIDGE_TIMEOUT_MS || 300_000);
 
   let modelCache: { at: number; models: CursorCliModel[] } | undefined;
+  let lastRequestedModel: string | undefined;
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -208,7 +243,16 @@ async function main() {
       }
 
       if (req.method === "GET" && url.pathname === "/health") {
-        json(res, 200, { ok: true, version: "0.1.0" });
+        json(res, 200, {
+          ok: true,
+          version: "0.1.1",
+          workspace: getWorkspace(),
+          mode,
+          defaultModel,
+          force,
+          approveMcps,
+          strictModel,
+        });
         return;
       }
 
@@ -246,97 +290,106 @@ async function main() {
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
         const raw = await readBody(req);
         const body = JSON.parse(raw || "{}") as OpenAiChatCompletionRequest;
-        const model = body.model || defaultModel;
+        const requested = normalizeModelId(body.model);
+        const explicitModel = requested && requested !== "auto" ? requested : undefined;
+        if (explicitModel) lastRequestedModel = explicitModel;
+
+        const model =
+          explicitModel ||
+          (strictModel ? lastRequestedModel : undefined) ||
+          requested ||
+          lastRequestedModel ||
+          defaultModel;
         const prompt = buildPromptFromMessages(body.messages || []);
 
-        const tempDir = await mkdtemp(path.join(tmpdir(), "cursor-openai-bridge-"));
-        try {
-          const cmdArgs: string[] = [
-            "--print",
-            "--mode",
-            mode,
-            "--model",
-            model,
-            "--output-format",
-            "text",
-            prompt,
-          ];
-          const out = await run(agentBin, cmdArgs, {
-            cwd: tempDir,
-            timeoutMs,
+        const workspace = getWorkspace();
+        const cmdArgs: string[] = ["--print"];
+
+        // For non-interactive usage, avoid prompts that would hang the bridge.
+        if (approveMcps) cmdArgs.push("--approve-mcps");
+        if (force) cmdArgs.push("--force");
+
+        // Cursor CLI only accepts --mode=ask|plan. "agent" is the default when --mode is omitted.
+        if (mode !== "agent") cmdArgs.push("--mode", mode);
+
+        cmdArgs.push("--workspace", workspace);
+        cmdArgs.push("--model", model);
+        cmdArgs.push("--output-format", "text");
+        cmdArgs.push(prompt);
+
+        const out = await run(agentBin, cmdArgs, {
+          cwd: workspace,
+          timeoutMs,
+        });
+        if (out.code !== 0) {
+          json(res, 500, {
+            error: {
+              message: `Cursor CLI failed (exit ${out.code}): ${out.stderr.trim()}`,
+              code: "cursor_cli_error",
+            },
           });
-          if (out.code !== 0) {
-            json(res, 500, {
-              error: {
-                message: `Cursor CLI failed (exit ${out.code}): ${out.stderr.trim()}`,
-                code: "cursor_cli_error",
-              },
-            });
-            return;
-          }
+          return;
+        }
 
-          const content = out.stdout.trim();
-          const id = `chatcmpl_${randomUUID().replace(/-/g, "")}`;
-          const created = Math.floor(Date.now() / 1000);
+        const content = out.stdout.trim();
+        const id = `chatcmpl_${randomUUID().replace(/-/g, "")}`;
+        const created = Math.floor(Date.now() / 1000);
 
-          if (body.stream) {
-            res.writeHead(200, {
-              "Content-Type": "text/event-stream",
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-            });
+        if (body.stream) {
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
 
-            const chunk1 = {
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: "assistant", content },
-                  finish_reason: null,
-                },
-              ],
-            };
-            res.write(`data: ${JSON.stringify(chunk1)}\n\n`);
-            const chunk2 = {
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [
-                {
-                  index: 0,
-                  delta: {},
-                  finish_reason: "stop",
-                },
-              ],
-            };
-            res.write(`data: ${JSON.stringify(chunk2)}\n\n`);
-            res.write("data: [DONE]\n\n");
-            res.end();
-            return;
-          }
-
-          json(res, 200, {
+          const chunk1 = {
             id,
-            object: "chat.completion",
+            object: "chat.completion.chunk",
             created,
             model,
             choices: [
               {
                 index: 0,
-                message: { role: "assistant", content },
+                delta: { role: "assistant", content },
+                finish_reason: null,
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(chunk1)}\n\n`);
+          const chunk2 = {
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: {},
                 finish_reason: "stop",
               },
             ],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          });
+          };
+          res.write(`data: ${JSON.stringify(chunk2)}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
           return;
-        } finally {
-          await rm(tempDir, { recursive: true, force: true });
         }
+
+        json(res, 200, {
+          id,
+          object: "chat.completion",
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        });
+        return;
       }
 
       json(res, 404, { error: { message: "Not found", code: "not_found" } });
@@ -356,9 +409,15 @@ async function main() {
     // eslint-disable-next-line no-console
     console.log(`- agent bin: ${agentBin}`);
     // eslint-disable-next-line no-console
+    console.log(`- workspace: ${getWorkspace()}`);
+    // eslint-disable-next-line no-console
     console.log(`- mode: ${mode}`);
     // eslint-disable-next-line no-console
     console.log(`- default model: ${defaultModel}`);
+    // eslint-disable-next-line no-console
+    console.log(`- force: ${force}`);
+    // eslint-disable-next-line no-console
+    console.log(`- approve mcps: ${approveMcps}`);
     // eslint-disable-next-line no-console
     console.log(`- required api key: ${requiredKey ? "yes" : "no"}`);
   });

@@ -43,7 +43,7 @@ Steps:
 
 2) Install the OpenCode plugin (dev shim):
    - Create ~/.config/opencode/plugins/cursor-opencode-auth.ts exporting CursorPlugin from:
-     /path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts
+     /path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js
 
 3) Configure OpenCode to expose a provider named "cursor" that points at the local bridge:
    - Update ~/.config/opencode/opencode.json to include:
@@ -54,7 +54,7 @@ Steps:
 
 4) Verify:
    - opencode models cursor
-   - In OpenCode, switch model to cursor/auto and send a test prompt.
+   - In OpenCode, switch model to cursor/gpt-5.2 (or any Cursor model ID) and send a test prompt.
 
 If the provider cannot connect, use the plugin tool cursor_bridge_start and retry.
 ```
@@ -82,7 +82,22 @@ npm --workspaces run build
 Create `~/.config/opencode/plugins/cursor-opencode-auth.ts`:
 
 ```ts
-export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts";
+// Uses your local checkout (v0.1.1+) instead of a cached npm install.
+export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
+```
+
+After the plugin loads once, it will automatically create/rename a versioned plugin entry
+so `/status` can show the version (you may need to restart OpenCode once).
+
+Important: if you previously installed the npm plugin via `opencode.json` (e.g. `"plugin": ["opencode-plugin-cursor"]`), remove it to avoid loading **two** versions of the plugin.
+
+If you prefer installing from npm instead of a local checkout, pin the version in your OpenCode config (after publishing):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-cursor@0.1.1"]
+}
 ```
 
 4) Add the Cursor provider to `~/.config/opencode/opencode.json`:
@@ -94,7 +109,7 @@ export { CursorPlugin } from "/path/to/cursor-opencode-auth/packages/opencode-pl
 
 ```bash
 opencode models cursor
-opencode run -m cursor/auto "say hello"
+opencode run -m cursor/gpt-5.2 "say hello"
 ```
 
 If the provider can’t connect, run `cursor_bridge_start` inside OpenCode (or start the bridge manually):
@@ -102,6 +117,14 @@ If the provider can’t connect, run `cursor_bridge_start` inside OpenCode (or s
 ```bash
 node /path/to/cursor-opencode-auth/packages/cursor-openai-bridge/dist/cli.js
 ```
+
+Bridge knobs (optional env vars):
+
+- `CURSOR_BRIDGE_WORKSPACE`: workspace dir for Cursor CLI (defaults to the bridge process `cwd`)
+- `CURSOR_BRIDGE_MODE`: `ask` | `plan` | `agent` (default: `agent`)
+- `CURSOR_BRIDGE_STRICT_MODEL`: `true` | `false` (default: `true`)
+- `CURSOR_BRIDGE_FORCE`: `true` | `false` (default: `true`)
+- `CURSOR_BRIDGE_APPROVE_MCPS`: `true` | `false` (default: `true`)
 
 ## Status
 

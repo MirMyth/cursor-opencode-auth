@@ -27,8 +27,12 @@ Example (local checkout):
 
 ```ts
 // ~/.config/opencode/plugins/cursor.ts
-export { CursorPlugin } from "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/src/index.ts";
+// Uses your local checkout (v0.1.1+) instead of a cached npm install.
+export { CursorPlugin } from "/abs/path/to/cursor-opencode-auth/packages/opencode-plugin-cursor/dist/index.js";
 ```
+
+After the plugin loads once, it will automatically create/rename a versioned plugin entry
+so `/status` can show the version (you may need to restart OpenCode once).
 
 Restart OpenCode.
 
@@ -39,6 +43,19 @@ OpenCode providers are HTTP-based. Cursor does not expose a public “chat compl
 ### 1) Start the bridge
 
 The bridge listens on `http://127.0.0.1:8765` by default.
+
+By default the bridge:
+
+- Runs Cursor CLI in **agent mode** (edits enabled; `--mode` is omitted)
+- Pins requests to the **last explicitly selected model** to avoid accidental `auto`/fallback calls (`CURSOR_BRIDGE_STRICT_MODEL=true`)
+
+Environment variables (optional):
+
+- `CURSOR_BRIDGE_WORKSPACE`: workspace dir for Cursor CLI (defaults to the bridge process `cwd`)
+- `CURSOR_BRIDGE_MODE`: `ask` | `plan` | `agent` (default: `agent`)
+- `CURSOR_BRIDGE_STRICT_MODEL`: `true` | `false` (default: `true`)
+- `CURSOR_BRIDGE_FORCE`: `true` | `false` (default: `true`)
+- `CURSOR_BRIDGE_APPROVE_MCPS`: `true` | `false` (default: `true`)
 
 Option A: start it from OpenCode (recommended)
 
@@ -82,7 +99,7 @@ After publishing `opencode-plugin-cursor` to npm:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-cursor"]
+  "plugin": ["opencode-plugin-cursor@0.1.1"]
 }
 ```
 
