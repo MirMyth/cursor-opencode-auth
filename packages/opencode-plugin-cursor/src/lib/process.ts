@@ -13,10 +13,21 @@ export type RunOptions = {
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
+    const isWin = process.platform === "win32";
+    
+    let actualCmd = cmd;
+    let actualArgs = args;
+    
+    if (isWin && (cmd.endsWith(".cmd") || cmd.endsWith(".bat") || cmd === "agent")) {
+      actualCmd = process.env.COMSPEC || "cmd.exe";
+      actualArgs = ["/d", "/s", "/c", cmd, ...args];
+    }
+    
+    const child = spawn(actualCmd, actualArgs, {
       cwd: opts.cwd,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
 
     const timeoutMs = opts.timeoutMs;
@@ -30,16 +41,19 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     let stdout = "";
     let stderr = "";
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+    }
 
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
+    if (child.stderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+    }
 
     child.on("error", (err: NodeJS.ErrnoException) => {
       if (timeout) clearTimeout(timeout);

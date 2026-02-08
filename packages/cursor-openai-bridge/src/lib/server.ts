@@ -88,7 +88,20 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
           lastRequestedModel ||
           config.defaultModel;
 
-        const prompt = buildPromptFromMessages(body.messages || []);
+        const messages = body.messages || [];
+        const promptFull = buildPromptFromMessages(messages);
+
+        const maxPromptArgChars = 8000;
+        let promptArg = promptFull;
+        let stdinPrompt: string | undefined;
+        if (promptFull.length > maxPromptArgChars) {
+          const recent = messages.filter((m) => m?.role !== "system" && m?.role !== "developer");
+          promptArg = buildPromptFromMessages(recent.slice(-8));
+          stdinPrompt = promptFull;
+        }
+        if (promptArg.length > maxPromptArgChars) {
+          promptArg = promptArg.slice(promptArg.length - maxPromptArgChars);
+        }
 
         const cmdArgs: string[] = ["--print"];
 
@@ -102,11 +115,12 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
         cmdArgs.push("--workspace", config.workspace);
         cmdArgs.push("--model", model);
         cmdArgs.push("--output-format", "text");
-        cmdArgs.push(prompt);
+        cmdArgs.push(promptArg);
 
         const out = await run(config.agentBin, cmdArgs, {
           cwd: config.workspace,
           timeoutMs: config.timeoutMs,
+          stdin: stdinPrompt,
         });
         if (out.code !== 0) {
           json(res, 500, {
@@ -129,7 +143,7 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
             Connection: "keep-alive",
           });
 
-          const chunk1 = {
+          const chunkRole = {
             id,
             object: "chat.completion.chunk",
             created,
@@ -137,13 +151,29 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
             choices: [
               {
                 index: 0,
-                delta: { role: "assistant", content },
+                delta: { role: "assistant" },
                 finish_reason: null,
               },
             ],
           };
-          res.write(`data: ${JSON.stringify(chunk1)}\n\n`);
-          const chunk2 = {
+          res.write(`data: ${JSON.stringify(chunkRole)}\n\n`);
+          
+          const chunkContent = {
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: { content },
+                finish_reason: null,
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(chunkContent)}\n\n`);
+          
+          const chunkStop = {
             id,
             object: "chat.completion.chunk",
             created,
@@ -156,7 +186,7 @@ export function startBridgeServer(opts: BridgeServerOptions): http.Server {
               },
             ],
           };
-          res.write(`data: ${JSON.stringify(chunk2)}\n\n`);
+          res.write(`data: ${JSON.stringify(chunkStop)}\n\n`);
           res.write("data: [DONE]\n\n");
           res.end();
           return;
